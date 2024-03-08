@@ -1,8 +1,8 @@
 ---
 title: "Lab 6: Policy Search"
-author: "Your Name (netID)"
+author: "Solomon(netID)"
 jupyter: julia-1.10
-date: 2024-03-01
+date: 2024-03-08
 week: 7
 categories: [Lab]
 
@@ -11,18 +11,18 @@ format:
 
     # YOU DO NOT NEED BOTH PDF AND DOCX.
     # COMMENT OR DELETE THE ONE YOU DON'T WANT TO USE.
-    pdf:
-        documentclass: article
-        fontsize: 11pt
-        geometry:
-            - margin=1in  
-        number-sections: true
-        code-line-numbers: true
-    #docx: 
-    #    toc: true
-    #    fig-format: png
-    #    number-sections: true
-    #    code-line-numbers: true
+   # pdf:
+        #documentclass: article
+        #fontsize: 11pt
+        #geometry:
+            #- margin=1in  
+        #number-sections: true
+        #code-line-numbers: true
+    docx: 
+       toc: true
+       fig-format: png
+       number-sections: true
+       code-line-numbers: true
 
 date-format: "ddd., MMM. D"
 
@@ -46,12 +46,128 @@ using Metaheuristics
 using Plots
 using Random
 using Unitful
+using HouseElevation
 
 Plots.default(; margin=5Plots.mm)
+
 ```
+
+
+```{julia}
+
+    slr_scenarios = let
+        df = CSV.read("data/slr_oddo.csv", DataFrame)
+        [Oddo17SLR(a, b, c, tstar, cstar) for (a, b, c, tstar, cstar) in eachrow(df)]
+    end
+
+    house = let
+        haz_fl_dept = CSV.read("data/haz_fl_dept.csv", DataFrame) # read in the file
+        row = @rsubset(haz_fl_dept, :DmgFnId .== 56)[1, :] # selecting ID
+        area = 2406u"ft^2" 
+        
+        House(
+            row;
+            area=area,
+            height_above_gauge=2u"ft",
+            value_usd=506_600,
+        )
+    end;
+
+    p = ModelParams(; house=house, years=2024:2100)
+
+    function draw_surge_distribution() # storm surge distribution
+        μ = rand(Normal(5, 1))
+        σ = rand(Exponential(1.5))
+        ξ = rand(Normal(0.1, 0.05))
+        return GeneralizedExtremeValue(μ, σ, ξ)
+    end
+
+    function draw_discount_rate() #drawing discounts rates
+        rate = rand(Normal(0.05, 0.02)) 
+        return max(0.0, rate) 
+    end
+
+    N_SOW = 1#_000
+
+    sows = [
+        SOW(rand(slr_scenarios), draw_surge_distribution(), draw_discount_rate()) for
+        _ in 1:N_SOW #generating random state of the world
+    ];
+```
+# Objective Function
 
 ```{julia}
 function objective_function(a::AbstractFloat)
-    return true # PLACEHOLDER
+    Random.seed!(2024)
+    sow = first(sows)
+    a_action = Action(a * 1u"ft")
+    npv = [run_sim(a_action, s, p) for s in sows]
+    return -sum(npv)  # Minimize NPV by negating sum
 end
+
+
 ```
+
+```{julia}
+# Generate a range of elevations for  testing objective function
+test_elevations = 0.0:1.0:5.0
+for elevation in test_elevations
+  obj_value = objective_function(elevation, first(sows), p)  # Use first SOW for testing
+  println("Elevation: $elevation ft, npv: $obj_value")
+end
+
+
+```
+# Constriants
+```{julia}
+
+bounds = boxconstraints(;lb=1.0, ub=14.0)
+options = Options(; time_limit=10.0)
+algorithm = ECA(; options=options)
+
+```
+# Optimization
+
+
+```julia
+
+Random.seed!(2024)
+result = optimize(objective_function, bounds, algorithm)
+```
+# Ploting 
+
+```{julia}
+using Plots
+
+function objective_function(a::AbstractFloat, sow, p)
+  a_action = Action(a * u"ft")
+  npv = [run_sim(a_action, s, p) for s in sows]
+  return -sum(npv)  # Minimize NPV by negating sum
+end
+# Plot the objective function
+elevation_range = 0:0.1:14
+objective_values_all = [objective_function(elev, sows, p) for elev in elevation_range]
+
+plot(elevation_range, objective_values_all, xlabel="Elevation (ft)", ylabel="npv",
+     label="Objective Function", legend=:bottomright)
+
+# Display the plot
+
+
+```
+
+# Analysis and Comments
+
+- The optimization algorithm  converges  when N_SOW_opt is increased. 
+
+- The analysis considers a finite number of SOWs, each represented by sea level rise, surge distribution and discount rate PDS. The main objective is to optimize the elevation decision that will return minimum npv.
+
+- Discount rate, storm surge, and sea level rise  are assummed to be the only source of uncertain associated with our objective function which make it easy to optimize the main objective in the analysis. However real world scenarios, there are other sorces of uncertainty such as uncertainty associated  lifespan of the house, the depth-damage curve, probabibility of flood occuring. 
+
+- The use of a finite number of SOWs introduces a trade-off between computation efficiency and the accuracy of the optimization solution. Averaging over SOWs is a way to handle uncertainty in decision-making when there is less computer power.
+
+-  The decision parameter elevating the house is the only parameter being optimized in this work. Future analysis should consider also optimizing the discount rate, surge distribution and the sea level rise. 
+
+- Future work should  consider more than one optimization algorithm or model for the analysis to see which one works best. 
+
+
